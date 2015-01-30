@@ -3,6 +3,7 @@
 #
 
 async      = require 'async'
+fs         = require 'fs'
 request    = require 'request'
 _          = require 'underscore'
 _s         = require 'underscore.string'
@@ -131,26 +132,43 @@ class GithubPrJenkinsIntegrator
   createJob: (branchName, prNum) =>
     jobName = @makePrJobName(branchName, prNum)
 
-    @jenkins.copy_job(
-      env.JENKINS_TEMPLATE_JOB_NAME
-      , jobName
-      , (config) ->
-        return config.replace '${pr_branch}', branchName
-      , (err, data) =>
+    jobCallback = (err, data) =>
+      if err
+        log.warn "Trouble creating job for branch #{branchName}."
+        log.warn err
+
+      log.info "Created job for branch #{branchName}, PR #{prNum}."
+
+      trigger_build_cb = =>
+        @triggerBuild jobName, (e, body) ->
+          if e
+            log.warn "Failed to trigger build for #{jobName}."
+            log.warn e
+
+      setTimeout trigger_build_cb, (30 * 1000)
+
+    if env.JENKINS_TEMPLATE_JOB_NAME 
+      @jenkins.copy_job(
+        env.JENKINS_TEMPLATE_JOB_NAME
+        , jobName
+        , (config) ->
+          return config.replace '${pr_branch}', branchName
+        , jobCallback
+      )
+    else if env.JENKINS_TEMPLATE_JOB_FILE
+      fs.readFile env.JENKINS_TEMPLATE_JOB_FILE, 'utf8', (err, config) =>
         if err
-          log.warn "Trouble creating job for branch #{branchName}."
+          log.warn "Error reading job config file #{env.JENKINS_TEMPLATE_JOB_FILE}"
           log.warn err
+          return
 
-        log.info "Created job for branch #{branchName}, PR #{prNum}."
-
-        trigger_build_cb = =>
-          @triggerBuild jobName, (e, body) ->
-            if e
-              log.warn "Failed to trigger build for #{jobName}."
-              log.warn e
-
-        setTimeout trigger_build_cb, (30 * 1000)
-    )
+        @jenkins.create_job(
+          jobName
+          , config.replace('${pr_branch}', branchName)
+          , jobCallback
+        )
+    else
+      log.error "Can not create job. JENKINS_TEMPLATE_JOB_NAME or JENKINS_TEMPLATE_JOB_FILE parameter required."
 
   triggerBuild: (jobName, cb) =>
     log.info "Triggering build on job #{jobName}."
